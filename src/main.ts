@@ -12,18 +12,18 @@ puppeteer.use(StealthPlugin());
 // Configuration
 const ENDPOINTS = [
 //  "https://apluslift.com/products.json",
-  //"https://beingshipped.com/products.json",
-//  "https://benchmarktooling.com/products.json",
-  //"https://gymshark.com/products.json",
-  //"https://mobiledirectonline.co.uk/products.json",
-  //"https://overstock.com/products.json",
-  //"https://pelacase.com/products.json",
+// "https://beingshipped.com/products.json",
+ //"https://benchmarktooling.com/products.json",
+ //"https://gymshark.com/products.json",
+// "https://mobiledirectonline.co.uk/products.json",
+ //"https://overstock.com/products.json",
+ "https://pelacase.com/products.json",
   "https://pura.com/products.json",
-  //"https://tecisoft.com/products.json",
-  //"https://warmlydecor.com/products.json",
-  //"https://www.allbirds.com/products.json",
-  //"https://www.beactivewear.com.au/products.json",
-  //"https://www.netflix.shop/products.json",
+ //"https://tecisoft.com/products.json",
+ //"https://warmlydecor.com/products.json",
+ //"https://www.allbirds.com/products.json",
+ //"https://www.beactivewear.com.au/products.json",
+ //"https://www.netflix.shop/products.json",
 ];
 
 const BATCH_SIZE = 250;
