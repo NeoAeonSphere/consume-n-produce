@@ -11,25 +11,25 @@ puppeteer.use(StealthPlugin());
 
 // Configuration
 const ENDPOINTS = [
-  "https://apluslift.com/products.json",
-  "https://beingshipped.com/products.json",
-  "https://benchmarktooling.com/products.json",
-  "https://gymshark.com/products.json",
-  "https://mobiledirectonline.co.uk/products.json",
-  "https://overstock.com/products.json",
-  "https://pelacase.com/products.json",
+//  "https://apluslift.com/products.json",
+  //"https://beingshipped.com/products.json",
+//  "https://benchmarktooling.com/products.json",
+  //"https://gymshark.com/products.json",
+  //"https://mobiledirectonline.co.uk/products.json",
+  //"https://overstock.com/products.json",
+  //"https://pelacase.com/products.json",
   "https://pura.com/products.json",
-  "https://tecisoft.com/products.json",
-  "https://warmlydecor.com/products.json",
-  "https://www.allbirds.com/products.json",
-  "https://www.beactivewear.com.au/products.json",
-  "https://www.netflix.shop/products.json",
+  //"https://tecisoft.com/products.json",
+  //"https://warmlydecor.com/products.json",
+  //"https://www.allbirds.com/products.json",
+  //"https://www.beactivewear.com.au/products.json",
+  //"https://www.netflix.shop/products.json",
 ];
 
 const BATCH_SIZE = 250;
 const DELAY_BETWEEN_REQUESTS = 2000;
 const MAX_RETRIES = 3;
-const MAX_WORKERS = Math.max(1, os.cpus().length);
+const MAX_WORKERS = Math.max(1, os.cpus().length-1);
 const MINIMUM_PRICE = 25;
 const OUTPUT_DIR = "./products";
 const TIMEOUT = 30000;
