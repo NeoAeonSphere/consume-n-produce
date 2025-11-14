@@ -10,33 +10,33 @@ import * as os from "node:os";
 puppeteer.use(StealthPlugin());
 
 // Configuration
-const ENDPOINTS = [
-//  "https://apluslift.com/products.json",
-// "https://beingshipped.com/products.json",
- //"https://benchmarktooling.com/products.json",
- //"https://gymshark.com/products.json",
-// "https://mobiledirectonline.co.uk/products.json",
- //"https://overstock.com/products.json",
- "https://pelacase.com/products.json",
-  "https://pura.com/products.json",
- //"https://tecisoft.com/products.json",
- //"https://warmlydecor.com/products.json",
- //"https://www.allbirds.com/products.json",
- //"https://www.beactivewear.com.au/products.json",
- //"https://www.netflix.shop/products.json",
+export const ENDPOINTS = [
+  //  "https://apluslift.com/products.json",
+  // "https://beingshipped.com/products.json",
+  //"https://benchmarktooling.com/products.json",
+  //"https://gymshark.com/products.json",
+  // "https://mobiledirectonline.co.uk/products.json",
+  //"https://overstock.com/products.json",
+  "https://pelacase.com/products.json",
+  // "https://pura.com/products.json",
+  //"https://tecisoft.com/products.json",
+  //"https://warmlydecor.com/products.json",
+  //"https://www.allbirds.com/products.json",
+  //"https://www.beactivewear.com.au/products.json",
+  //"https://www.netflix.shop/products.json",
 ];
 
-const BATCH_SIZE = 250;
-const DELAY_BETWEEN_REQUESTS = 2000;
-const MAX_RETRIES = 3;
-const MAX_WORKERS = Math.max(1, os.cpus().length-1);
-const MINIMUM_PRICE = 25;
-const OUTPUT_DIR = "./products";
-const TIMEOUT = 30000;
+export const BATCH_SIZE = 250;
+export const DELAY_BETWEEN_REQUESTS = 2000;
+export const MAX_RETRIES = 3;
+export const MAX_WORKERS = Math.max(1, os.cpus().length / 2);
+export const MINIMUM_PRICE = 25;
+export const PRODUCTS_OUTPUT_DIR = "./products";
+export const TIMEOUT = 30000;
 
 // Create output directory if it doesn't exist
-if (isMainThread && !fs.existsSync(OUTPUT_DIR)) {
-  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+if (isMainThread && !fs.existsSync(PRODUCTS_OUTPUT_DIR)) {
+  fs.mkdirSync(PRODUCTS_OUTPUT_DIR, { recursive: true });
 }
 
 // Interfaces
@@ -56,6 +56,11 @@ export interface ProductVariant {
   barcode?: string;
   gtin?: string;
   mpn?: string;
+  dimensions?: {
+    length?: number;
+    width?: number;
+    height?: number;
+  };
 }
 
 export interface ProductImage {
@@ -109,9 +114,34 @@ export interface Product {
   };
 }
 
+// API Response types
+interface ApiResponse {
+  products: Product[];
+  pagination?: {
+    page: number;
+    limit: number;
+    total: number;
+  };
+}
+
+interface CacheEntry<T = unknown> {
+  data: T;
+  expiry: number;
+}
+
+interface WorkerMessage {
+  type: "result" | "error";
+  data?: Product[];
+  error?: string;
+}
+
+interface WorkerData {
+  endpoint: string;
+}
+
 // Cache implementation
 class ResponseCache {
-  private cache: Map<string, { data: any; expiry: number }> = new Map();
+  private cache: Map<string, CacheEntry> = new Map();
   private cacheFile: string;
   private hitCount: number = 0;
   private missCount: number = 0;
@@ -121,7 +151,7 @@ class ResponseCache {
     this.loadCache();
   }
 
-  set(key: string, data: any, ttl: number = 3600000) {
+  set(key: string, data: unknown, ttl: number = 3600000): void {
     this.cache.set(key, {
       data,
       expiry: Date.now() + ttl,
@@ -129,7 +159,7 @@ class ResponseCache {
     this.saveCache();
   }
 
-  get(key: string): any | null {
+  get<T>(key: string): T | null {
     const item = this.cache.get(key);
     if (!item) {
       this.missCount++;
@@ -144,12 +174,17 @@ class ResponseCache {
     }
 
     this.hitCount++;
-    return item.data;
+    return item.data as T;
   }
 
   has(key: string): boolean {
-    const hasItem =
-      this.cache.has(key) && Date.now() <= this.cache.get(key)!.expiry;
+    const item = this.cache.get(key);
+    if (!item) {
+      this.missCount++;
+      return false;
+    }
+
+    const hasItem = Date.now() <= item.expiry;
     if (!hasItem) {
       this.missCount++;
     } else {
@@ -177,23 +212,24 @@ class ResponseCache {
     this.saveCache();
   }
 
-  private loadCache() {
+  private loadCache(): void {
     try {
       if (fs.existsSync(this.cacheFile)) {
         const data = fs.readFileSync(this.cacheFile, "utf8");
-        this.cache = new Map(JSON.parse(data));
+        const entries = JSON.parse(data) as [string, CacheEntry][];
+        this.cache = new Map(entries);
       }
-    } catch (error: any) {
-      console.warn("Could not load cache:", error.message);
+    } catch (error) {
+      console.warn("Could not load cache:", (error as Error).message);
     }
   }
 
-  private saveCache() {
+  private saveCache(): void {
     try {
       const data = JSON.stringify(Array.from(this.cache.entries()));
       fs.writeFileSync(this.cacheFile, data, "utf8");
-    } catch (error: any) {
-      console.warn("Could not save cache:", error.message);
+    } catch (error) {
+      console.warn("Could not save cache:", (error as Error).message);
     }
   }
 }
@@ -209,20 +245,24 @@ const generateRandomUserAgent = () => {
 };
 
 // Worker thread function to process a single endpoint
-const processEndpoint = async (endpoint: string): Promise<Product[]> => {
+const processEndpoint = async (
+  endpoint: string
+): Promise<Record<string, unknown>[]> => {
   const cache = new ResponseCache();
   const hostname = new URL(endpoint).hostname;
   const cacheKey = `products_${sanitizeFilename(hostname)}`;
 
   // Check cache first
-  const cachedData = cache.get(cacheKey);
-  if (cachedData && cachedData.products) {
+  const cachedData = cache.get<{ products: Record<string, unknown>[] }>(
+    cacheKey
+  );
+  if (cachedData?.products) {
     console.log(`Using cached products for ${endpoint}`);
     return cachedData.products;
   }
 
   console.log(`Fetching products from ${endpoint}`);
-  let allProducts: Product[] = [];
+  let allProducts: Record<string, unknown>[] = [];
   let page = 1;
   let hasMorePages = true;
   let retries = 0;
@@ -231,10 +271,10 @@ const processEndpoint = async (endpoint: string): Promise<Product[]> => {
     try {
       const url = `${endpoint}${
         endpoint.includes("?") ? "&" : "?"
-      }page=${page}&limit=250`;
+      }page=${page}&limit=${BATCH_SIZE}`;
       console.log(`Fetching page ${page} from ${endpoint}`);
 
-      let products: Product[] = [];
+      let products: Record<string, unknown>[] = [];
 
       // Try direct API request first
       try {
@@ -252,12 +292,15 @@ const processEndpoint = async (endpoint: string): Promise<Product[]> => {
         clearTimeout(timeoutId);
 
         if (response.ok) {
-          const data = await response.json();
-          products = data.products || [];
+          const data = (await response.json()) as ApiResponse;
+          products = (data.products || []) as unknown as Record<
+            string,
+            unknown
+          >[];
         } else {
           throw new Error(`HTTP ${response.status}`);
         }
-      } catch (error: any) {
+      } catch (error) {
         // If direct request fails, try Puppeteer
         console.log(`Direct request failed, trying Puppeteer for ${url}`);
         products = await fetchWithPuppeteer(url);
@@ -280,10 +323,10 @@ const processEndpoint = async (endpoint: string): Promise<Product[]> => {
           setTimeout(resolve, DELAY_BETWEEN_REQUESTS)
         );
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error(
         `Error fetching page ${page} from ${endpoint}:`,
-        error.message
+        (error as Error).message
       );
       retries++;
       await new Promise((resolve) =>
@@ -303,7 +346,9 @@ const processEndpoint = async (endpoint: string): Promise<Product[]> => {
 };
 
 // Fetch with Puppeteer
-const fetchWithPuppeteer = async (url: string): Promise<Product[]> => {
+const fetchWithPuppeteer = async (
+  url: string
+): Promise<Record<string, unknown>[]> => {
   const browser = await puppeteer.launch({
     headless: true,
     args: [
@@ -347,39 +392,54 @@ const fetchWithPuppeteer = async (url: string): Promise<Product[]> => {
         /<script[^>]*type="application\/json"[^>]*>([\s\S]*?)<\/script>/
       );
 
-    let products: Product[] = [];
+    let products: Record<string, unknown>[] = [];
 
-    if (jsonMatch && jsonMatch[1]) {
+    if (jsonMatch?.[1]) {
       try {
-        const jsonData = JSON.parse(jsonMatch[1]);
-        products = jsonData.products || [];
-      } catch (error: any) {
-        console.warn("Failed to parse JSON from page:", error.message);
+        const jsonData = JSON.parse(jsonMatch[1]) as ApiResponse;
+        products = (jsonData.products || []) as unknown as Record<
+          string,
+          unknown
+        >[];
+      } catch (error) {
+        console.warn(
+          "Failed to parse JSON from page:",
+          (error as Error).message
+        );
       }
     }
 
     // If no products found, try to evaluate JavaScript in the context
     if (products.length === 0) {
       try {
-        products = await page.evaluate(() => {
-          // @ts-ignore
-          if (window.products || window.productData) {
-            // @ts-ignore
-            return window.products || window.productData.products || [];
+        products = await page.evaluate((): Record<string, unknown>[] => {
+          // Type assertion for window properties that may not be defined
+          const windowWithProducts = window as unknown as {
+            products?: Record<string, unknown>[];
+            productData?: { products: Record<string, unknown>[] };
+          };
+
+          if (windowWithProducts.products) {
+            return windowWithProducts.products;
           }
+
+          if (windowWithProducts.productData?.products) {
+            return windowWithProducts.productData.products;
+          }
+
           return [];
         });
-      } catch (error: any) {
+      } catch (error) {
         console.warn(
           "Failed to extract products from page context:",
-          error.message
+          (error as Error).message
         );
       }
     }
 
     return products;
-  } catch (error: any) {
-    console.error(`Puppeteer error for ${url}:`, error.message);
+  } catch (error) {
+    console.error(`Puppeteer error for ${url}:`, (error as Error).message);
     return [];
   } finally {
     await browser.close();
@@ -387,24 +447,22 @@ const fetchWithPuppeteer = async (url: string): Promise<Product[]> => {
 };
 
 // Process and enhance product data
-const processProduct = (product: any): Product => {
-  const variants = product.variants || [];
-  const images = product.images || [];
+const processProduct = (product: Record<string, unknown>): Product => {
+  const variants = (product.variants as ProductVariant[]) || [];
+  const images = (product.images as ProductImage[]) || [];
 
   // Calculate price range
   const prices = variants
-    .map((v: any) => parseFloat(v.price))
-    .filter((p: number) => !isNaN(p));
+    .map((v) => parseFloat(String(v.price)))
+    .filter((p) => !Number.isNaN(p));
   const minPrice = prices.length > 0 ? Math.min(...prices) : undefined;
 
   // Calculate compare at price range
   const comparePrices = variants
-    .map((v: any) =>
-      v.compare_at_price ? parseFloat(v.compare_at_price) : undefined
+    .map((v) =>
+      v.compare_at_price ? parseFloat(String(v.compare_at_price)) : undefined
     )
-    .filter(
-      (p: number | undefined) => p !== undefined && !isNaN(p)
-    ) as number[];
+    .filter((p): p is number => p !== undefined && !Number.isNaN(p));
 
   const minComparePrice =
     comparePrices.length > 0 ? Math.min(...comparePrices) : undefined;
@@ -412,30 +470,24 @@ const processProduct = (product: any): Product => {
   return {
     ...product,
     tags: Array.isArray(product.tags)
-      ? product.tags
-      : product.tags?.split(", ") || [],
+      ? (product.tags as string[])
+      : String(product.tags || "").split(", ") || [],
     price: minPrice,
     compare_at_price: minComparePrice,
     featured_image_url: images[0]?.src,
     images_count: images.length,
     variants_count: variants.length,
-    status: product.status || "active",
+    status: String(product.status || "active"),
     barcode: variants[0]?.barcode,
-    brand: product.vendor,
-    category: product.product_type,
-    availability: variants.some((v: any) => v.available)
+    brand: String(product.vendor || ""),
+    category: String(product.product_type || ""),
+    availability: variants.some((v) => v.available)
       ? "in stock"
       : "out of stock",
     condition: "new",
     weight: variants[0]?.weight,
-    dimensions: variants[0]
-      ? {
-          length: variants[0].length,
-          width: variants[0].width,
-          height: variants[0].height,
-        }
-      : undefined,
-  };
+    dimensions: variants[0]?.dimensions,
+  } as Product;
 };
 
 // Filter products by minimum price
@@ -479,7 +531,7 @@ const classifyAndWriteProducts = (products: Product[]) => {
   // Write classified products to files
   Object.entries(classified).forEach(([type, products]) => {
     const sanitizedType = sanitizeFilename(type);
-    const typeDir = path.join(OUTPUT_DIR, sanitizedType);
+    const typeDir = path.join(PRODUCTS_OUTPUT_DIR, sanitizedType);
 
     if (!fs.existsSync(typeDir)) {
       fs.mkdirSync(typeDir, { recursive: true });
@@ -503,7 +555,7 @@ const mainThread = async () => {
   console.log(`Starting product fetching with ${MAX_WORKERS} workers...`);
   console.log(`Will filter out products with price < $${MINIMUM_PRICE}`);
 
-  const results: Product[][] = [];
+  const results: Record<string, unknown>[][] = [];
   const workers: Worker[] = [];
 
   // Create a worker for each endpoint
@@ -538,11 +590,14 @@ const mainThread = async () => {
     )
   );
 
-  const allProducts = results.flat();
+  const allRawProducts = results.flat();
 
-  console.log(`Total products fetched: ${allProducts.length}`);
+  console.log(`Total products fetched: ${allRawProducts.length}`);
 
-  if (allProducts.length > 0) {
+  if (allRawProducts.length > 0) {
+    // Process products
+    const allProducts = allRawProducts.map(processProduct);
+
     // Filter products by minimum price
     const filteredProducts = filterProductsByPrice(allProducts, MINIMUM_PRICE);
 
@@ -570,7 +625,7 @@ const mainThread = async () => {
       };
 
       fs.writeFileSync(
-        path.join(OUTPUT_DIR, "summary.json"),
+        path.join(PRODUCTS_OUTPUT_DIR, "summary.json"),
         JSON.stringify(summary, null, 2),
         "utf8"
       );
@@ -585,14 +640,17 @@ const mainThread = async () => {
 // Worker thread logic
 const workerThread = async () => {
   try {
-    const { endpoint } = workerData;
+    const { endpoint } = workerData as WorkerData;
     const products = await processEndpoint(endpoint);
     const processedProducts = products.map(processProduct);
 
     // Write intermediate results per endpoint
     const hostname = new URL(endpoint).hostname;
     fs.writeFileSync(
-      path.join(OUTPUT_DIR, `products_${sanitizeFilename(hostname)}.json`),
+      path.join(
+        PRODUCTS_OUTPUT_DIR,
+        `products_${sanitizeFilename(hostname)}.json`
+      ),
       JSON.stringify(processedProducts, null, 2),
       "utf8"
     );
@@ -600,13 +658,13 @@ const workerThread = async () => {
     parentPort!.postMessage({
       type: "result",
       data: processedProducts,
-    });
-  } catch (error: any) {
+    } as WorkerMessage);
+  } catch (error) {
     console.error("Worker error:", error);
     parentPort!.postMessage({
       type: "error",
-      error: error.message,
-    });
+      error: (error as Error).message,
+    } as WorkerMessage);
   }
 };
 
